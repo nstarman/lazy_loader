@@ -4,6 +4,8 @@ lazy_loader
 
 Makes it easy to load subpackages and functions on demand.
 """
+from __future__ import annotations
+
 import ast
 import importlib
 import importlib.util
@@ -11,11 +13,21 @@ import inspect
 import os
 import sys
 import types
+from typing import Any, Callable, Iterable, Mapping
 
 __all__ = ["attach", "load", "attach_stub"]
 
 
-def attach(package_name, submodules=None, submod_attrs=None):
+_GetAttrT = Callable[[str], Any]
+_DirT = Callable[[], list[str]]
+_AllT = list[str]
+
+
+def attach(
+    package_name: str,
+    submodules: Iterable[str] | None = None,
+    submod_attrs: Mapping[str, Iterable[str]] | None = None,
+) -> tuple[_GetAttrT, _DirT, _AllT]:
     """Attach lazily loaded submodules, functions, or other attributes.
 
     Typically, modules import submodules and attributes as follows::
@@ -57,19 +69,16 @@ def attach(package_name, submodules=None, submod_attrs=None):
     if submod_attrs is None:
         submod_attrs = {}
 
-    if submodules is None:
-        submodules = set()
-    else:
-        submodules = set(submodules)
+    submods = set() if submodules is None else set(submodules)
 
     attr_to_modules = {
         attr: mod for mod, attrs in submod_attrs.items() for attr in attrs
     }
 
-    __all__ = list(submodules | attr_to_modules.keys())
+    __all__ = list(submods | attr_to_modules.keys())
 
-    def __getattr__(name):
-        if name in submodules:
+    def __getattr__(name: str) -> Any:
+        if name in submods:
             return importlib.import_module(f"{package_name}.{name}")
         elif name in attr_to_modules:
             submod_path = f"{package_name}.{attr_to_modules[name]}"
@@ -87,22 +96,24 @@ def attach(package_name, submodules=None, submod_attrs=None):
         else:
             raise AttributeError(f"No {package_name} attribute {name}")
 
-    def __dir__():
+    def __dir__() -> list[str]:
         return __all__
 
     if os.environ.get("EAGER_IMPORT", ""):
-        for attr in set(attr_to_modules.keys()) | submodules:
+        for attr in set(attr_to_modules.keys()) | submods:
             __getattr__(attr)
 
-    return __getattr__, __dir__, list(__all__)
+    return __getattr__, __dir__, __all__
 
 
 class DelayedImportErrorModule(types.ModuleType):
-    def __init__(self, frame_data, *args, **kwargs):
+    def __init__(
+        self, frame_data: dict[str, Any], name: str, doc: str | None = None
+    ) -> None:
         self.__frame_data = frame_data
-        super().__init__(*args, **kwargs)
+        super().__init__(name, doc=doc)
 
-    def __getattr__(self, x):
+    def __getattr__(self, x: str) -> None:
         if x in ("__class__", "__file__", "__frame_data"):
             super().__getattr__(x)
         else:
@@ -115,7 +126,7 @@ class DelayedImportErrorModule(types.ModuleType):
             )
 
 
-def load(fullname, error_on_import=False):
+def load(fullname: str, error_on_import: bool = False) -> types.ModuleType:
     """Return a lazily imported proxy for a module.
 
     We often see the following pattern::
@@ -166,7 +177,7 @@ def load(fullname, error_on_import=False):
         pass
 
     spec = importlib.util.find_spec(fullname)
-    if spec is None:
+    if spec is None or spec.loader is None:
         if error_on_import:
             raise ModuleNotFoundError(f"No module named '{fullname}'")
         else:
@@ -195,23 +206,23 @@ def load(fullname, error_on_import=False):
 class _StubVisitor(ast.NodeVisitor):
     """AST visitor to parse a stub file for submodules and submod_attrs."""
 
-    def __init__(self):
-        self._submodules = set()
-        self._submod_attrs = {}
+    def __init__(self) -> None:
+        self._submodules: set[str] = set()  # TODO! get ast._Identier hint somehow
+        self._submod_attrs: dict[str, list[str]] = {}
 
-    def visit_ImportFrom(self, node: ast.ImportFrom):
+    def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
         if node.level != 1:
             raise ValueError(
                 "Only within-module imports are supported (`from .* import`)"
             )
         if node.module:
-            attrs: list = self._submod_attrs.setdefault(node.module, [])
+            attrs: list[str] = self._submod_attrs.setdefault(node.module, [])
             attrs.extend(alias.name for alias in node.names)
         else:
             self._submodules.update(alias.name for alias in node.names)
 
 
-def attach_stub(package_name: str, filename: str):
+def attach_stub(package_name: str, filename: str) -> tuple[_GetAttrT, _DirT, _AllT]:
     """Attach lazily loaded submodules, functions from a type stub.
 
     This is a variant on ``attach`` that will parse a `.pyi` stub file to

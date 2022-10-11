@@ -32,3 +32,15 @@ Source = "https://github.com/scientific-python/lazy_loader"
 
 [tool.flit.sdist]
 exclude = ["tests/*"]
+
+[tool.mypy]
+  python_version = "3.9"
+  strict = true
+  show_error_codes = true
+  show_error_context = true
+  show_column_numbers = true
+  pretty = true
+  exclude = '''(^|/)tests/'''
+  plugins = [
+    './lazy_loader/typing/mypy_plugin.py'
+  ]
